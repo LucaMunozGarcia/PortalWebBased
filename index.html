@@ -1,29 +1,21 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8">
-  <title>Portal Test Chamber — Debug</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8" />
+  <title>Portal Test Chamber — GitHub Debug</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    html,body{height:100%;margin:0;background:#000}
-    #info {
-      position: absolute;
-      left: 10px;
-      top: 10px;
-      color: white;
-      font-family: sans-serif;
-      z-index: 10;
-      background: rgba(0,0,0,0.4);
-      padding: 8px;
-      border-radius: 6px;
-    }
-    canvas { display:block }
+    html,body{height:100%;margin:0;background:#202328;color:#ddd;font-family:sans-serif}
+    #info{position:absolute;left:10px;top:10px;z-index:20;background:rgba(0,0,0,0.5);padding:8px;border-radius:6px}
+    #log{position:absolute;left:10px;bottom:10px;right:10px;max-height:35vh;overflow:auto;background:rgba(0,0,0,0.6);padding:8px;border-radius:6px;z-index:20;font-size:13px}
+    .ok{color:#8ef0a4} .err{color:#ff8a8a} .warn{color:#ffd07a}
+    canvas{display:block}
   </style>
 </head>
 <body>
-<div id="info">
-  WASD = bewegen · Maus = umschauen (Pointer Lock) · Linksklick = blaues Portal · Rechtsklick = orange Portal
-</div>
+<div id="info">WASD = bewegen · Maus = umschauen (Pointer Lock) · Linksklick = blaues Portal · Rechtsklick = orange Portal</div>
+<div id="log"><b>Start-Log</b><br/></div>
+
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.152.2/build/three.module.js';
 import { PointerLockControls } from 'https://unpkg.com/three@0.152.2/examples/jsm/controls/PointerLockControls.js';
@@ -31,168 +23,141 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.152.2/examples/jsm/loaders
 import { FontLoader } from 'https://unpkg.com/three@0.152.2/examples/jsm/loaders/FontLoader.js';
 import { TextGeometry } from 'https://unpkg.com/three@0.152.2/examples/jsm/geometries/TextGeometry.js';
 
+const logEl = document.getElementById('log');
+function log(...args){ console.log(...args); logEl.innerHTML += args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '<br/>'; logEl.scrollTop = logEl.scrollHeight; }
+function ok(msg){ log('<span class="ok">OK:</span> ' + msg); }
+function warn(msg){ log('<span class="warn">WARN:</span> ' + msg); }
+function err(msg){ log('<span class="err">ERR:</span> ' + msg); }
+
 let camera, scene, renderer, controls;
-let move = { forward: false, back: false, left: false, right: false };
-let velocity = new THREE.Vector3();
-let direction = new THREE.Vector3();
-let clock = new THREE.Clock();
+let move = { forward:false, back:false, left:false, right:false };
+let velocity = new THREE.Vector3(), direction = new THREE.Vector3(), clock = new THREE.Clock();
+const portalRadius = 0.9, portalOffset = 0.01;
+const portals = [{mesh:null,ring:null,renderTarget:null,virtualCam:null,color:0x3fa9ff},{mesh:null,ring:null,renderTarget:null,virtualCam:null,color:0xff8a35}];
 
-const portalRadius = 0.9;
-const portalOffset = 0.01;
+init().catch(e => { err('Init failed: '+(e && e.message) || e); console.error(e); });
 
-const portals = [
-  { mesh: null, ring: null, renderTarget: null, virtualCam: null, color: 0x3fa9ff },
-  { mesh: null, ring: null, renderTarget: null, virtualCam: null, color: 0xff8a35 }
-];
-
-init();
-animate();
-
-async function init() {
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+async function init(){
+  renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setClearColor(0x40434a); // nicht komplett schwarz
+  renderer.setClearColor(0x40434a);
   document.body.appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x40434a);
 
-  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
-  camera.position.set(0, 1.6, 5);
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 2000);
+  camera.position.set(0,1.6,5);
 
-  // Lights: Ambient für Debug, Hemisphere + Dirhr für Schlagschatten-Feeling
-  const ambient = new THREE.AmbientLight(0xffffff, 1.0);
-  scene.add(ambient);
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4);
-  scene.add(hemi);
-  const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-  dir.position.set(5, 10, 7.5);
-  scene.add(dir);
+  // Lights
+  const ambient = new THREE.AmbientLight(0xffffff, 0.9); scene.add(ambient);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.3); scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.5); dir.position.set(5,10,7.5); scene.add(dir);
 
-  // PointerLockControls
+  // Controls
   controls = new PointerLockControls(camera, renderer.domElement);
-  renderer.domElement.addEventListener('click', () => { controls.lock(); });
+  renderer.domElement.addEventListener('click', () => controls.lock());
   scene.add(controls.getObject());
+  document.addEventListener('keydown', onKeyDown); document.addEventListener('keyup', onKeyUp);
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  renderer.domElement.addEventListener('mousedown', e => { if (!controls.isLocked) return; if (e.button === 0) placePortal(0); if (e.button === 2) placePortal(1); });
 
-  document.addEventListener('keydown', onKeyDown);
-  document.addEventListener('keyup', onKeyUp);
-  document.addEventListener('contextmenu', function(e){ e.preventDefault(); }, false);
+  // Debug helpers (always visible)
+  scene.add(new THREE.GridHelper(20,20,0x444444,0x222222));
+  scene.add(new THREE.AxesHelper(2));
+  const debugSphere = new THREE.Mesh(new THREE.SphereGeometry(0.35,32,16), new THREE.MeshStandardMaterial({color:0x00ffcc,emissive:0x003333,emissiveIntensity:0.6}));
+  debugSphere.position.set(0,1.6,0); scene.add(debugSphere);
 
-  renderer.domElement.addEventListener('mousedown', (e) => {
-    if (!controls.isLocked) return;
-    if (e.button === 0) placePortal(0);
-    if (e.button === 2) placePortal(1);
-  });
+  // Check resources on GitHub
+  const baseTex = './files/textures/wall.jpg';
+  const baseModel = './files/models/scene.glb';
+  const texExists = await checkResource(baseTex);
+  const modelExists = await checkResource(baseModel);
 
-  // Debug helpers: grid + axes + visible sphere so the scene is never completely black
-  const grid = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
-  scene.add(grid);
-  const axes = new THREE.AxesHelper(2);
-  scene.add(axes);
+  if (texExists) ok(baseTex + ' gefunden');
+  else warn(baseTex + ' NICHT gefunden — Verwende fallback-Farbe');
 
-  const debugSphereMat = new THREE.MeshStandardMaterial({ color: 0x00ffcc, emissive: 0x004444, emissiveIntensity: 0.6, metalness: 0.2, roughness: 0.6 });
-  const debugSphere = new THREE.Mesh(new THREE.SphereGeometry(0.4, 32, 16), debugSphereMat);
-  debugSphere.position.set(0, 1.6, 0); // direkt vor der Kamera
-  scene.add(debugSphere);
+  if (modelExists) ok(baseModel + ' gefunden');
+  else warn(baseModel + ' NICHT gefunden — Baue Standard-World');
 
-  // Versuche, Raum zu bauen oder Fallback
-  await buildRoomWithFallback();
+  // Build scene depending on presence
+  await buildRoomWithFallback(texExists, modelExists, baseTex, baseModel);
 
   // Portal setup
-  for (let i = 0; i < 2; i++) {
-    const rt = new THREE.WebGLRenderTarget(1024, 1024);
-    portals[i].renderTarget = rt;
-    portals[i].virtualCam = new THREE.PerspectiveCamera(75, 1, 0.1, 2000);
-
-    const geo = new THREE.CircleGeometry(portalRadius, 64);
-    const mat = new THREE.MeshBasicMaterial({ map: rt.texture, side: THREE.DoubleSide, color: 0xffffff });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(0, -1000, 0);
-    scene.add(mesh);
-    portals[i].mesh = mesh;
-
-    const ringGeo = new THREE.RingGeometry(portalRadius * 1.05, portalRadius * 1.25, 64);
-    const ringMat = new THREE.MeshStandardMaterial({ color: portals[i].color, emissive: portals[i].color, emissiveIntensity: 0.25 });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.position.set(0, -1000, 0);
-    scene.add(ring);
-    portals[i].ring = ring;
+  for (let i=0;i<2;i++){
+    const rt = new THREE.WebGLRenderTarget(1024,1024); portals[i].renderTarget = rt;
+    portals[i].virtualCam = new THREE.PerspectiveCamera(75,1,0.1,2000);
+    const geo = new THREE.CircleGeometry(portalRadius,64);
+    const mat = new THREE.MeshBasicMaterial({map:rt.texture,side:THREE.DoubleSide,color:0xffffff});
+    const mesh = new THREE.Mesh(geo,mat); mesh.position.set(0,-1000,0); scene.add(mesh); portals[i].mesh = mesh;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(portalRadius*1.05,portalRadius*1.25,64), new THREE.MeshStandardMaterial({color:portals[i].color,emissive:portals[i].color,emissiveIntensity:0.25}));
+    ring.position.set(0,-1000,0); scene.add(ring); portals[i].ring = ring;
   }
 
   window.addEventListener('resize', onWindowResize);
+  ok('Init komplett — Szene läuft. Klicke ins Canvas, um Maus zu sperren.');
+  animate();
 }
 
-async function buildRoomWithFallback(){
+// Prüft per fetch, ob die Datei erreichbar ist (GitHub Pages: relative Pfad)
+async function checkResource(url){
+  try{
+    const r = await fetch(url, {method:'GET'});
+    return r.ok;
+  } catch (e){
+    console.warn('fetch failed for', url, e);
+    return false;
+  }
+}
+
+async function buildRoomWithFallback(texExists, modelExists, texUrl, modelUrl){
   const textureLoader = new THREE.TextureLoader();
   const gltfLoader = new GLTFLoader();
 
   let wallTexture = null;
-  try {
-    wallTexture = await loadTexturePromise(textureLoader, './files/textures/wall.jpg');
-    wallTexture.wrapS = wallTexture.wrapT = THREE.RepeatWrapping;
-    wallTexture.repeat.set(4, 2);
-  } catch (err) {
-    console.warn('Kein wall.jpg gefunden — fallback Farbe');
+  if (texExists){
+    try {
+      wallTexture = await loadTexturePromise(textureLoader, texUrl);
+      wallTexture.wrapS = wallTexture.wrapT = THREE.RepeatWrapping;
+      wallTexture.repeat.set(4,2);
+    } catch (e) {
+      warn('Texture load error: ' + e.message);
+    }
   }
 
   let modelLoaded = false;
-  try {
-    const gltf = await loadGLTFPromise(gltfLoader, './files/models/scene.glb');
-    gltf.scene.traverse((c) => { if (c.isMesh) c.castShadow = c.receiveShadow = true; });
-    scene.add(gltf.scene);
-    modelLoaded = true;
-  } catch (err) {
-    console.warn('Kein scene.glb gefunden — baue Standard-World');
+  if (modelExists){
+    try {
+      const gltf = await loadGLTFPromise(gltfLoader, modelUrl);
+      gltf.scene.traverse(c => { if (c.isMesh) c.castShadow = c.receiveShadow = true; });
+      scene.add(gltf.scene);
+      modelLoaded = true;
+      ok('GLTF geladen');
+    } catch (e){
+      err('GLTF Loader error: ' + (e && e.message)); console.error(e);
+    }
   }
 
-  if (!modelLoaded) {
+  if (!modelLoaded){
     const room = new THREE.Group();
+    const floorMat = wallTexture ? new THREE.MeshStandardMaterial({map:wallTexture}) : new THREE.MeshStandardMaterial({color:0x666666});
+    const wallMat = wallTexture ? new THREE.MeshStandardMaterial({map:wallTexture}) : new THREE.MeshStandardMaterial({color:0x777777});
+    const ceilingMat = new THREE.MeshStandardMaterial({color:0x333333});
 
-    const floorMat = wallTexture ? new THREE.MeshStandardMaterial({ map: wallTexture }) : new THREE.MeshStandardMaterial({ color: 0x666666 });
-    const wallMat = wallTexture ? new THREE.MeshStandardMaterial({ map: wallTexture }) : new THREE.MeshStandardMaterial({ color: 0x777777 });
-    const ceilingMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(20,20), floorMat); floor.rotation.x = -Math.PI/2; floor.receiveShadow=true; room.add(floor);
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(20,20), ceilingMat); ceiling.position.y = 4; ceiling.rotation.x = Math.PI/2; room.add(ceiling);
 
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    room.add(floor);
+    const w1 = new THREE.Mesh(new THREE.PlaneGeometry(20,4), wallMat); w1.position.set(0,2,-10); room.add(w1);
+    const w2 = new THREE.Mesh(new THREE.PlaneGeometry(20,4), wallMat); w2.position.set(0,2,10); w2.rotation.y = Math.PI; room.add(w2);
+    const w3 = new THREE.Mesh(new THREE.PlaneGeometry(20,4), wallMat); w3.position.set(-10,2,0); w3.rotation.y = Math.PI/2; room.add(w3);
+    const w4 = new THREE.Mesh(new THREE.PlaneGeometry(20,4), wallMat); w4.position.set(10,2,0); w4.rotation.y = -Math.PI/2; room.add(w4);
 
-    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), ceilingMat);
-    ceiling.position.y = 4;
-    ceiling.rotation.x = Math.PI / 2;
-    room.add(ceiling);
-
-    const w1 = new THREE.Mesh(new THREE.PlaneGeometry(20, 4), wallMat);
-    w1.position.set(0, 2, -10);
-    room.add(w1);
-
-    const w2 = new THREE.Mesh(new THREE.PlaneGeometry(20, 4), wallMat);
-    w2.position.set(0, 2, 10);
-    w2.rotation.y = Math.PI;
-    room.add(w2);
-
-    const w3 = new THREE.Mesh(new THREE.PlaneGeometry(20, 4), wallMat);
-    w3.position.set(-10, 2, 0);
-    w3.rotation.y = Math.PI / 2;
-    room.add(w3);
-
-    const w4 = new THREE.Mesh(new THREE.PlaneGeometry(20, 4), wallMat);
-    w4.position.set(10, 2, 0);
-    w4.rotation.y = -Math.PI / 2;
-    room.add(w4);
-
-    const boxMat = new THREE.MeshStandardMaterial({ color: 0x8888aa });
-    const b1 = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), boxMat);
-    b1.position.set(2, 0.75, -2);
-    room.add(b1);
-
-    const b2 = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), boxMat);
-    b2.position.set(-3, 1, 1);
-    room.add(b2);
+    const boxMat = new THREE.MeshStandardMaterial({color:0x8888aa});
+    const b1 = new THREE.Mesh(new THREE.BoxGeometry(1.5,1.5,1.5), boxMat); b1.position.set(2,0.75,-2); room.add(b1);
+    const b2 = new THREE.Mesh(new THREE.BoxGeometry(1,2,1), boxMat); b2.position.set(-3,1,1); room.add(b2);
 
     scene.add(room);
-
     if (!wallTexture) {
       await addMissingFilesText();
     }
@@ -200,91 +165,52 @@ async function buildRoomWithFallback(){
 }
 
 function addMissingFilesText(){
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const loader = new FontLoader();
     loader.load('https://unpkg.com/three@0.152.2/examples/fonts/helvetiker_regular.typeface.json',
-      (font) => {
-        const geo = new TextGeometry('MISSING\nfiles/textures\nor models', {
-          font: font,
-          size: 0.28,
-          height: 0.06,
-          curveSegments: 4,
-        });
-        const mat = new THREE.MeshStandardMaterial({ color: 0xff4444, emissive: 0x440000 });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(-2, 2, -3);
-        mesh.rotation.y = Math.PI/12;
-        scene.add(mesh);
+      font => {
+        const geo = new TextGeometry('MISSING\\nfiles/textures\\nor models', {font, size:0.28, height:0.06, curveSegments:4});
+        const mat = new THREE.MeshStandardMaterial({color:0xff4444,emissive:0x440000});
+        const mesh = new THREE.Mesh(geo, mat); mesh.position.set(-2,2,-3); mesh.rotation.y = Math.PI/12; scene.add(mesh);
         resolve();
       },
       undefined,
-      () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = 512; canvas.height = 256;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'rgba(255,80,80,1)';
-        ctx.font = '36px sans-serif';
+      e => {
+        warn('Font load failed, using sprite text');
+        const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 256;
+        const ctx = canvas.getContext('2d'); ctx.fillStyle = 'rgba(255,80,80,1)'; ctx.font='36px sans-serif';
         ctx.fillText('MISSING files/textures or models', 10, 60);
         const tx = new THREE.CanvasTexture(canvas);
-        const mat = new THREE.SpriteMaterial({ map: tx });
-        const sprite = new THREE.Sprite(mat);
-        sprite.position.set(0, 2.2, -3);
-        sprite.scale.set(4, 2, 1);
-        scene.add(sprite);
+        const mat = new THREE.SpriteMaterial({map:tx});
+        const sprite = new THREE.Sprite(mat); sprite.position.set(0,2.2,-3); sprite.scale.set(4,2,1); scene.add(sprite);
         resolve();
       }
     );
   });
 }
 
-function loadTexturePromise(loader, url) {
-  return new Promise((resolve, reject) => {
-    loader.load(url, resolve, undefined, reject);
-  });
+function loadTexturePromise(loader, url){
+  return new Promise((resolve, reject) => { loader.load(url, resolve, undefined, e => reject(e)); });
 }
-function loadGLTFPromise(loader, url) {
-  return new Promise((resolve, reject) => {
-    loader.load(url, resolve, undefined, reject);
-  });
+function loadGLTFPromise(loader, url){
+  return new Promise((resolve, reject) => { loader.load(url, resolve, undefined, e => reject(e)); });
 }
 
-function onKeyDown(event) {
-  switch (event.code) {
-    case 'KeyW': move.forward = true; break;
-    case 'KeyS': move.back = true; break;
-    case 'KeyA': move.left = true; break;
-    case 'KeyD': move.right = true; break;
-  }
-}
-function onKeyUp(event) {
-  switch (event.code) {
-    case 'KeyW': move.forward = false; break;
-    case 'KeyS': move.back = false; break;
-    case 'KeyA': move.left = false; break;
-    case 'KeyD': move.right = false; break;
-  }
-}
+function onKeyDown(e){ switch(e.code){ case 'KeyW': move.forward=true; break; case 'KeyS': move.back=true; break; case 'KeyA': move.left=true; break; case 'KeyD': move.right=true; break; } }
+function onKeyUp(e){ switch(e.code){ case 'KeyW': move.forward=false; break; case 'KeyS': move.back=false; break; case 'KeyA': move.left=false; break; case 'KeyD': move.right=false; break; } }
 
-function placePortal(index) {
+function placePortal(index){
   const raycaster = new THREE.Raycaster();
-  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const dir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   raycaster.set(camera.position, dir);
-
-  const objects = [];
-  scene.traverse((c) => { if (c.isMesh && c !== portals[0].mesh && c !== portals[1].mesh && c !== portals[0].ring && c !== portals[1].ring) objects.push(c); });
-
-  const hits = raycaster.intersectObjects(objects, true);
-  if (hits.length === 0) return;
-  const hit = hits[0];
-  const point = hit.point;
+  const objects = []; scene.traverse(c => { if (c.isMesh && c !== portals[0].mesh && c !== portals[1].mesh && c !== portals[0].ring && c !== portals[1].ring) objects.push(c); });
+  const hits = raycaster.intersectObjects(objects, true); if (!hits.length) return;
+  const hit = hits[0]; const point = hit.point;
   const normal = hit.face ? hit.face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize() : new THREE.Vector3(0,0,1);
-
-  const mesh = portals[index].mesh;
-  const ring = portals[index].ring;
-
+  const mesh = portals[index].mesh, ring = portals[index].ring;
   const targetNormal = normal.clone().negate();
   const camDir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).projectOnPlane(targetNormal).normalize();
-  if (camDir.length() > 0.0001) {
+  if (camDir.length() > 0.0001){
     const portalRight = new THREE.Vector3().crossVectors(targetNormal, camDir).normalize();
     const portalUp = new THREE.Vector3().crossVectors(portalRight, targetNormal).normalize();
     const m = new THREE.Matrix4().makeBasis(portalRight, portalUp, targetNormal);
@@ -293,27 +219,21 @@ function placePortal(index) {
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), targetNormal);
     mesh.quaternion.copy(q);
   }
-
   mesh.position.copy(point).add(normal.clone().multiplyScalar(portalOffset));
-  ring.position.copy(point).add(normal.clone().multiplyScalar(portalOffset * 0.5));
+  ring.position.copy(point).add(normal.clone().multiplyScalar(portalOffset*0.5));
   ring.quaternion.copy(mesh.quaternion);
-
-  mesh.visible = true;
-  ring.visible = true;
+  mesh.visible = ring.visible = true;
+  ok('Portal '+(index===0?'blau':'orange')+' platziert');
 }
 
-function updatePortalViews() {
-  const savedVisibility = [portals[0].mesh.visible, portals[1].mesh.visible, portals[0].ring.visible, portals[1].ring.visible];
+function updatePortalViews(){
+  const saved = [portals[0].mesh.visible, portals[1].mesh.visible, portals[0].ring.visible, portals[1].ring.visible];
   portals[0].mesh.visible = portals[1].mesh.visible = false;
   portals[0].ring.visible = portals[1].ring.visible = false;
-
-  for (let a = 0; a < 2; a++) {
-    const b = 1 - a;
-    const pa = portals[a];
-    const pb = portals[b];
+  for (let a=0;a<2;a++){
+    const b = 1-a; const pa = portals[a], pb = portals[b];
     if (!pa.mesh || !pb.mesh) continue;
     if (pa.mesh.position.y < -50 || pb.mesh.position.y < -50) continue;
-
     const camWorldMat = new THREE.Matrix4().copy(camera.matrixWorld);
     const portalAMatrix = new THREE.Matrix4().copy(pa.mesh.matrixWorld);
     const portalBMatrix = new THREE.Matrix4().copy(pb.mesh.matrixWorld);
@@ -321,57 +241,32 @@ function updatePortalViews() {
     const rot180 = new THREE.Matrix4().makeRotationY(Math.PI);
     const localCam = new THREE.Matrix4().multiplyMatrices(rot180, new THREE.Matrix4().multiplyMatrices(invA, camWorldMat));
     const virtualCamMat = new THREE.Matrix4().multiplyMatrices(portalBMatrix, localCam);
-
     pa.virtualCam.matrixWorld.copy(virtualCamMat);
     pa.virtualCam.matrixWorldInverse.copy(new THREE.Matrix4().invert(virtualCamMat));
     pa.virtualCam.projectionMatrix.copy(camera.projectionMatrix);
     pa.virtualCam.position.setFromMatrixPosition(virtualCamMat);
     pa.virtualCam.rotation.setFromRotationMatrix(virtualCamMat);
-
-    renderer.setRenderTarget(pa.renderTarget);
-    renderer.clear();
-    renderer.render(scene, pa.virtualCam);
-    renderer.setRenderTarget(null);
-
-    if (pb.mesh) {
-      pb.mesh.material.map = pa.renderTarget.texture;
-      pb.mesh.material.needsUpdate = true;
-    }
+    renderer.setRenderTarget(pa.renderTarget); renderer.clear(); renderer.render(scene, pa.virtualCam); renderer.setRenderTarget(null);
+    if (pb.mesh){ pb.mesh.material.map = pa.renderTarget.texture; pb.mesh.material.needsUpdate = true; }
   }
-
-  portals[0].mesh.visible = savedVisibility[0];
-  portals[1].mesh.visible = savedVisibility[1];
-  portals[0].ring.visible = savedVisibility[2];
-  portals[1].ring.visible = savedVisibility[3];
+  portals[0].mesh.visible = saved[0]; portals[1].mesh.visible = saved[1];
+  portals[0].ring.visible = saved[2]; portals[1].ring.visible = saved[3];
 }
 
-function animate() {
+function animate(){
   requestAnimationFrame(animate);
-
   const delta = Math.min(0.05, clock.getDelta());
-  velocity.x -= velocity.x * 10.0 * delta;
-  velocity.z -= velocity.z * 10.0 * delta;
-
-  direction.z = Number(move.forward) - Number(move.back);
-  direction.x = Number(move.right) - Number(move.left);
+  velocity.x -= velocity.x * 10.0 * delta; velocity.z -= velocity.z * 10.0 * delta;
+  direction.z = Number(move.forward) - Number(move.back); direction.x = Number(move.right) - Number(move.left);
   direction.normalize();
-
   if (move.forward || move.back) velocity.z -= direction.z * 50.0 * delta;
   if (move.left || move.right) velocity.x -= direction.x * 50.0 * delta;
-
-  controls.moveRight(- velocity.x * delta);
-  controls.moveForward(- velocity.z * delta);
-
+  controls.moveRight(-velocity.x * delta); controls.moveForward(-velocity.z * delta);
   updatePortalViews();
-
   renderer.render(scene, camera);
 }
 
-function onWindowResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
+function onWindowResize(){ camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
 </script>
 </body>
 </html>
